@@ -12,8 +12,10 @@
  * The rb_malloc/rb_free seam in src/rbtree.c keeps this possible later
  * without being required now.
  *
- * Also out of scope: rb_delete is Milestone 2 and is not exercised here;
- * it only needs to compile/link safely against its stub.
+ * Milestone 2 adds rb_delete coverage via a small table-driven harness
+ * (run_ops): a sequence of insert/delete ops is applied one at a time,
+ * asserting rb_validate(t) == 0 and the expected rb_size after every
+ * single op, so a fixup bug is caught at the exact op that breaks it.
  */
 #include "rbtree.h"
 
@@ -442,6 +444,419 @@ static void test_foreach_empty_and_null_safe(void) {
     rb_destroy(t);
 }
 
+/* ---- Milestone 2: table-driven rb_delete tests ---- */
+
+typedef struct {
+    char        op;     /* 'i' insert, 'd' delete */
+    const char *key;
+    int         expect; /* expected rb_insert/rb_delete return value */
+} rb_op;
+
+/* Applies a sequence of insert/delete ops one at a time, asserting
+ * rb_validate(t) == 0 and the expected size after every single op, so a
+ * fixup bug is caught at the exact op that introduces it. Every insert in
+ * these tables uses a key not already present, so a successful op always
+ * changes size by exactly +-1. */
+static void run_ops(rbtree_t *t, const rb_op *ops, size_t n) {
+    size_t size = rb_size(t);
+    for (size_t i = 0; i < n; i++) {
+        int rc = (ops[i].op == 'i') ? rb_insert(t, ops[i].key, NULL)
+                                     : rb_delete(t, ops[i].key);
+        assert(rc == ops[i].expect);
+        if (rc == 0) {
+            if (ops[i].op == 'i') {
+                size++;
+            } else {
+                size--;
+            }
+        }
+        assert(rb_size(t) == size);
+        assert(rb_validate(t) == 0);
+    }
+}
+
+static void test_delete_empty_tree(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    assert(rb_delete(t, "missing") == -1);
+    assert(rb_size(t) == 0);
+    assert(rb_validate(t) == 0);
+
+    rb_destroy(t);
+}
+
+static void test_delete_missing_key_leaves_tree_unchanged(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    const rb_op ops[] = {
+        {'i', "b", 0}, {'i', "a", 0}, {'i', "c", 0},
+        {'d', "z", -1}, /* absent key: tree unchanged */
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_size(t) == 3);
+
+    rb_destroy(t);
+}
+
+static void test_delete_null_args(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+    assert(rb_insert(t, "a", NULL) == 0);
+
+    assert(rb_delete(NULL, "a") == -1);
+    assert(rb_delete(t, NULL) == -1);
+    assert(rb_size(t) == 1);
+
+    rb_destroy(t);
+}
+
+static void test_delete_only_node_empties_tree(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    const rb_op ops[] = {{'i', "a", 0}, {'d', "a", 0}};
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "a") == NULL);
+    assert(rb_size(t) == 0);
+
+    rb_destroy(t);
+}
+
+static void test_delete_red_leaf_no_fixup(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* "b" root black, "a"/"c" red leaves; deleting a red leaf never
+     * triggers delete_fixup (its original color was red). */
+    const rb_op ops[] = {
+        {'i', "b", 0}, {'i', "a", 0}, {'i', "c", 0},
+        {'d', "a", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "a") == NULL);
+    assert(rb_size(t) == 2);
+
+    rb_destroy(t);
+}
+
+static void test_delete_node_with_only_left_child(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* "b" root black with only a red left child "a"; deleting "b" takes
+     * the z->right == NULL splice path and promotes "a" to root. */
+    const rb_op ops[] = {{'i', "b", 0}, {'i', "a", 0}, {'d', "b", 0}};
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "b") == NULL);
+    assert(rb_size(t) == 1);
+
+    rb_destroy(t);
+}
+
+static void test_delete_node_with_only_right_child(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Mirror: "a" root black with only a red right child "b"; deleting
+     * "a" takes the z->left == NULL splice path. */
+    const rb_op ops[] = {{'i', "a", 0}, {'i', "b", 0}, {'d', "a", 0}};
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "a") == NULL);
+    assert(rb_size(t) == 1);
+
+    rb_destroy(t);
+}
+
+static void test_delete_two_children_successor_is_right_child(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* "b" root black, "a"/"c" red leaves. z="b" has two children and its
+     * successor is z->right ("c") directly, i.e. the y->parent == z
+     * splice path in rb_delete. Successor "c" is red, so no fixup fires
+     * here; this test is purely about the transplant plumbing. */
+    const rb_op ops[] = {
+        {'i', "b", 0}, {'i', "a", 0}, {'i', "c", 0},
+        {'d', "b", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "b") == NULL);
+    assert(rb_size(t) == 2);
+
+    rb_destroy(t);
+}
+
+static void test_delete_two_children_successor_is_deeper(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Inserting b,a,d,c produces b(B) root, a(B) left leaf, d(B) right,
+     * c(R) as d's left child (insert-fixup case 1 on "c"). Deleting "b"
+     * (two children) finds its successor at tree_minimum(d) == "c",
+     * which is NOT z->right directly -- the y->parent != z splice path.
+     * Successor "c" is red, so again no delete_fixup fires; this test
+     * targets the deeper-successor transplant plumbing specifically. */
+    const rb_op ops[] = {
+        {'i', "b", 0}, {'i', "a", 0}, {'i', "d", 0}, {'i', "c", 0},
+        {'d', "b", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "b") == NULL);
+    assert(rb_size(t) == 3);
+
+    rb_destroy(t);
+}
+
+static void test_delete_fixup_case4_left(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Inserting b,a,c,d produces b(B) root, a(B) left leaf, c(B) right,
+     * d(R) as c's right child (insert-fixup case 1 recolors a and c
+     * black). Deleting "a" makes x=NULL, x_parent=b, sibling w=c black
+     * with far nephew d red -- delete_fixup Case 4 (left), which
+     * terminates the loop in one step via rotate_left at b. */
+    const rb_op ops[] = {
+        {'i', "b", 0}, {'i', "a", 0}, {'i', "c", 0}, {'i', "d", 0},
+        {'d', "a", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "a") == NULL);
+    assert(rb_size(t) == 3);
+
+    rb_destroy(t);
+}
+
+static void test_delete_fixup_case4_right(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Mirror: inserting c,d,b,a produces c(B) root, b(B) left [a(R) as
+     * b's left child], d(B) right leaf. Deleting "d" makes x=NULL,
+     * x_parent=c, sibling w=b black with far nephew a red --
+     * delete_fixup Case 4 (right/mirror). */
+    const rb_op ops[] = {
+        {'i', "c", 0}, {'i', "d", 0}, {'i', "b", 0}, {'i', "a", 0},
+        {'d', "d", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "d") == NULL);
+    assert(rb_size(t) == 3);
+
+    rb_destroy(t);
+}
+
+static void test_delete_fixup_case2_left_propagates_to_root(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Inserting d,b,f,a,c,e,g produces the perfect tree d(B) root,
+     * b(B)/f(B) children each with two red leaves. Deleting the four red
+     * leaves (no fixup) turns b and f into black leaves; deleting "b"
+     * then makes x=NULL, x_parent=d, sibling w=f black with both
+     * nephews black (NULL) -- delete_fixup Case 2 (left), which recolors
+     * f red and pushes x up to the root, terminating the loop. */
+    const rb_op ops[] = {
+        {'i', "d", 0}, {'i', "b", 0}, {'i', "f", 0},
+        {'i', "a", 0}, {'i', "c", 0}, {'i', "e", 0}, {'i', "g", 0},
+        {'d', "a", 0}, {'d', "c", 0}, {'d', "e", 0}, {'d', "g", 0},
+        {'d', "b", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "b") == NULL);
+    assert(rb_size(t) == 2);
+
+    rb_destroy(t);
+}
+
+static void test_delete_fixup_case2_right_propagates_to_root(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Mirror of the above: same starting tree, but delete "f" last
+     * instead of "b" -- x_parent=d, sibling w=b black with both nephews
+     * black -- delete_fixup Case 2 (right/mirror). */
+    const rb_op ops[] = {
+        {'i', "d", 0}, {'i', "b", 0}, {'i', "f", 0},
+        {'i', "a", 0}, {'i', "c", 0}, {'i', "e", 0}, {'i', "g", 0},
+        {'d', "a", 0}, {'d', "c", 0}, {'d', "e", 0}, {'d', "g", 0},
+        {'d', "f", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "f") == NULL);
+    assert(rb_size(t) == 2);
+
+    rb_destroy(t);
+}
+
+static void test_delete_root_triggers_fixup(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Same case-4 shape as test_delete_fixup_case4_left, but this time
+     * delete the ROOT's sibling-bearing side by deleting "b" won't hit
+     * fixup (two children, red successor) -- instead delete "a" (as
+     * before) then delete the resulting new root "c" to confirm a
+     * second fixup-triggering delete at the root still validates. */
+    const rb_op ops[] = {
+        {'i', "b", 0}, {'i', "a", 0}, {'i', "c", 0}, {'i', "d", 0},
+        {'d', "a", 0}, /* case 4 left, as above; new root becomes "c" */
+        {'d', "c", 0}, /* deletes the (new) root itself */
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "a") == NULL);
+    assert(rb_find(t, "c") == NULL);
+    assert(rb_size(t) == 2);
+
+    rb_destroy(t);
+}
+
+static void test_delete_value_free_called_once_on_success(void) {
+    reset_counting_free();
+    rbtree_t *t = rb_create(counting_free);
+    assert(t != NULL);
+
+    int v = 7;
+    assert(rb_insert(t, "a", &v) == 0);
+
+    assert(rb_delete(t, "a") == 0);
+    assert(free_calls == 1);
+    assert(last_freed == &v);
+    assert(rb_find(t, "a") == NULL);
+
+    rb_destroy(t);
+}
+
+static void test_delete_value_free_not_called_on_missing_key(void) {
+    reset_counting_free();
+    rbtree_t *t = rb_create(counting_free);
+    assert(t != NULL);
+
+    int v = 7;
+    assert(rb_insert(t, "a", &v) == 0);
+
+    assert(rb_delete(t, "missing") == -1);
+    assert(free_calls == 0);
+    assert(rb_find(t, "a") == &v);
+
+    rb_destroy(t);
+}
+
+static void test_delete_frees_key_copy_and_value(void) {
+    free_backed_calls = 0;
+    rbtree_t *t = rb_create(free_backed_free);
+    assert(t != NULL);
+
+    const char *keys[] = {"one", "two", "three", "four", "five"};
+    for (size_t i = 0; i < 5; i++) {
+        int *v = malloc(sizeof *v);
+        assert(v != NULL);
+        *v = (int)i;
+        assert(rb_insert(t, keys[i], v) == 0);
+    }
+
+    for (size_t i = 0; i < 5; i++) {
+        assert(rb_delete(t, keys[i]) == 0);
+        assert(rb_validate(t) == 0);
+    }
+
+    /* Proxy check (call count); make asan/make memcheck confirm no leak
+     * or double-free of the key copy or the value. */
+    assert(free_backed_calls == 5);
+    assert(rb_size(t) == 0);
+
+    rb_destroy(t);
+}
+
+static void test_delete_size_tracking(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    const rb_op ops[] = {
+        {'i', "k1", 0}, {'i', "k2", 0}, {'i', "k3", 0}, {'i', "k4", 0},
+        {'d', "k2", 0}, {'d', "k4", 0},
+        {'d', "k2", -1}, /* already gone: size must not change */
+        {'d', "k1", 0}, {'d', "k3", 0},
+        {'d', "k3", -1}, /* tree now empty */
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_size(t) == 0);
+
+    rb_destroy(t);
+}
+
+static void test_delete_random_deterministic_large(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    enum { N = 300 };
+    static char keys[N][16];
+    for (int i = 0; i < N; i++) {
+        snprintf(keys[i], sizeof keys[i], "key-%d", i);
+    }
+
+    /* Same fixed-seed LCG shuffle style as
+     * test_fixup_random_deterministic_large, applied twice: once for
+     * insertion order, once (with a different seed) for deletion order,
+     * so the tree shape at each delete isn't just insertion order
+     * reversed. Both permutations are deterministic and reproducible.
+     * Correctness of this test rests entirely on rb_validate(t) == 0
+     * after every single delete, not on which delete_fixup case fires
+     * at each step -- across a run like this every case (and its
+     * mirror) fires many times. */
+    unsigned long state = 12345;
+    for (int i = N - 1; i > 0; i--) {
+        state = state * 1103515245UL + 12345UL;
+        int j = (int)(state % (unsigned long)(i + 1));
+        char tmp[16];
+        memcpy(tmp, keys[i], sizeof tmp);
+        memcpy(keys[i], keys[j], sizeof tmp);
+        memcpy(keys[j], tmp, sizeof tmp);
+    }
+    for (int i = 0; i < N; i++) {
+        assert(rb_insert(t, keys[i], (void *)(intptr_t)i) == 0);
+    }
+    assert(rb_validate(t) == 0);
+    assert(rb_size(t) == (size_t)N);
+
+    state = 99999;
+    for (int i = N - 1; i > 0; i--) {
+        state = state * 1103515245UL + 12345UL;
+        int j = (int)(state % (unsigned long)(i + 1));
+        char tmp[16];
+        memcpy(tmp, keys[i], sizeof tmp);
+        memcpy(keys[i], keys[j], sizeof tmp);
+        memcpy(keys[j], tmp, sizeof tmp);
+    }
+    for (int i = 0; i < N; i++) {
+        assert(rb_delete(t, keys[i]) == 0);
+        assert(rb_validate(t) == 0);
+        assert(rb_size(t) == (size_t)(N - 1 - i));
+    }
+
+    for (int i = 0; i < N; i++) {
+        assert(rb_find(t, keys[i]) == NULL);
+    }
+    assert(rb_size(t) == 0);
+
+    rb_destroy(t);
+}
+
 int main(void) {
     test_create_basic();
     test_insert_find_single();
@@ -464,6 +879,26 @@ int main(void) {
     test_rotation_at_root_updates_root();
     test_foreach_ascending_order();
     test_foreach_empty_and_null_safe();
+
+    test_delete_empty_tree();
+    test_delete_missing_key_leaves_tree_unchanged();
+    test_delete_null_args();
+    test_delete_only_node_empties_tree();
+    test_delete_red_leaf_no_fixup();
+    test_delete_node_with_only_left_child();
+    test_delete_node_with_only_right_child();
+    test_delete_two_children_successor_is_right_child();
+    test_delete_two_children_successor_is_deeper();
+    test_delete_fixup_case4_left();
+    test_delete_fixup_case4_right();
+    test_delete_fixup_case2_left_propagates_to_root();
+    test_delete_fixup_case2_right_propagates_to_root();
+    test_delete_root_triggers_fixup();
+    test_delete_value_free_called_once_on_success();
+    test_delete_value_free_not_called_on_missing_key();
+    test_delete_frees_key_copy_and_value();
+    test_delete_size_tracking();
+    test_delete_random_deterministic_large();
 
     printf("ALL TESTS PASSED\n");
     return 0;

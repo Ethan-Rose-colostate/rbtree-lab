@@ -1,7 +1,10 @@
-/* Milestone 1, Slice 1 fuzz stub: not a real fuzzing strategy (no random
- * corpus or crash triage) -- just enough real work over `rbtree.c` that
- * `make test`/`make asan`/`make memcheck` exercise the code under
+/* Fuzz stub: not a real fuzzing strategy (no random corpus or crash
+ * triage) -- just enough real work over `rbtree.c` that `make
+ * test`/`make asan`/`make memcheck` exercise the code under
  * sanitizers/valgrind instead of trivially passing on an empty binary.
+ * Every third iteration deletes instead of inserting (the key may or may
+ * not be present), so rb_delete/delete_fixup run under the sanitizers
+ * and valgrind too, not just rb_insert.
  */
 #include "rbtree.h"
 
@@ -31,6 +34,15 @@ int main(int argc, char **argv) {
         char key[32];
         snprintf(key, sizeof key, "key-%lu", i % 512);
 
+        if (i % 3 == 2) {
+            rb_delete(t, key); /* key may or may not be present */
+            if (rb_validate(t) != 0) {
+                rb_destroy(t);
+                return 1;
+            }
+            continue;
+        }
+
         int *value = malloc(sizeof *value);
         if (value == NULL) {
             rb_destroy(t);
@@ -46,6 +58,11 @@ int main(int argc, char **argv) {
 
         void *found = rb_find(t, key);
         if (found == NULL) {
+            rb_destroy(t);
+            return 1;
+        }
+
+        if (rb_validate(t) != 0) {
             rb_destroy(t);
             return 1;
         }
