@@ -3,6 +3,8 @@
 - Build & unit tests: ‘make test‘
 - Sanitizers: ‘make asan‘ Valgrind: ‘make memcheck‘
 - A change is DONE only when all three pass. Always run them; show output.
+- Requires GCC ≥14 (for the `-std=c23` flag spelling). On hosts whose default
+`gcc` is older, load a newer one first, e.g. `module load gcc/15.2.0`.
 ## Hard constraints
 - NEVER modify include/rbtree.h. It is the graded contract.
 - Check every allocation. malloc can return NULL; a NULL return must
