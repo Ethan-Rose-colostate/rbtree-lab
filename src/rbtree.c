@@ -22,7 +22,7 @@ enum rb_color { RB_RED, RB_BLACK };
 struct rb_node {
     char           *key;      /* owned copy, NUL-terminated */
     void           *value;    /* owned only if t->value_free != NULL */
-    enum rb_color   color;    /* set RB_RED on insert; unused for logic this slice */
+    enum rb_color   color;    /* read by insert_fixup, delete_fixup, and validate */
     struct rb_node *left;
     struct rb_node *right;
     struct rb_node *parent;   /* NULL for root */

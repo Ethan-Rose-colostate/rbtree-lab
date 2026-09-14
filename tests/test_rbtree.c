@@ -857,6 +857,208 @@ static void test_delete_random_deterministic_large(void) {
     rb_destroy(t);
 }
 
+/* ---- Milestone 3: hardening and final sweep ---- */
+
+static void test_destroy_empty_tree_frees_nothing(void) {
+    reset_counting_free();
+    rbtree_t *t = rb_create(counting_free);
+    assert(t != NULL);
+    assert(rb_size(t) == 0);
+
+    rb_destroy(t);
+
+    assert(free_calls == 0);
+}
+
+static void test_insert_find_delete_very_long_key(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    enum { LONG_KEY_LEN = 5000 }; /* well past the 4KB adversarial threshold */
+    static char long_key[LONG_KEY_LEN + 1];
+    memset(long_key, 'x', LONG_KEY_LEN);
+    long_key[LONG_KEY_LEN] = '\0';
+
+    int value = 99;
+    assert(rb_insert(t, long_key, &value) == 0);
+    assert(rb_size(t) == 1);
+    assert(rb_find(t, long_key) == &value);
+    assert(rb_validate(t) == 0);
+
+    assert(rb_delete(t, long_key) == 0);
+    assert(rb_find(t, long_key) == NULL);
+    assert(rb_size(t) == 0);
+    assert(rb_validate(t) == 0);
+
+    rb_destroy(t);
+}
+
+static void test_insert_find_delete_empty_string_key(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    int value = 5;
+    assert(rb_insert(t, "", &value) == 0);
+    assert(rb_size(t) == 1);
+    assert(rb_find(t, "") == &value);
+    assert(rb_validate(t) == 0);
+
+    assert(rb_delete(t, "") == 0);
+    assert(rb_find(t, "") == NULL);
+    assert(rb_size(t) == 0);
+
+    rb_destroy(t);
+}
+
+static void test_overwrite_same_key_many_times_no_double_free(void) {
+    free_backed_calls = 0;
+    rbtree_t *t = rb_create(free_backed_free);
+    assert(t != NULL);
+
+    enum { ITERS = 50 };
+    for (int i = 0; i < ITERS; i++) {
+        int *v = malloc(sizeof *v);
+        assert(v != NULL);
+        *v = i;
+        assert(rb_insert(t, "k", v) == 0);
+    }
+    /* Each of the first ITERS-1 inserts overwrote and freed the
+     * previous value; the final value is still live in the tree. */
+    assert(free_backed_calls == ITERS - 1);
+    assert(rb_size(t) == 1);
+
+    rb_destroy(t);
+    assert(free_backed_calls == ITERS);
+}
+
+static void test_destroy_frees_everything_large_randomized(void) {
+    free_backed_calls = 0;
+    rbtree_t *t = rb_create(free_backed_free);
+    assert(t != NULL);
+
+    enum { N = 300 };
+    static char keys[N][16];
+    for (int i = 0; i < N; i++) {
+        snprintf(keys[i], sizeof keys[i], "key-%d", i);
+    }
+    /* Fixed-seed LCG shuffle, same style as the Milestone 1/2 large
+     * deterministic tests. */
+    unsigned long state = 55555;
+    for (int i = N - 1; i > 0; i--) {
+        state = state * 1103515245UL + 12345UL;
+        int j = (int)(state % (unsigned long)(i + 1));
+        char tmp[16];
+        memcpy(tmp, keys[i], sizeof tmp);
+        memcpy(keys[i], keys[j], sizeof tmp);
+        memcpy(keys[j], tmp, sizeof tmp);
+    }
+
+    for (int i = 0; i < N; i++) {
+        int *v = malloc(sizeof *v);
+        assert(v != NULL);
+        *v = i;
+        assert(rb_insert(t, keys[i], v) == 0);
+    }
+    assert(rb_validate(t) == 0);
+    assert(rb_size(t) == (size_t)N);
+
+    rb_destroy(t);
+    assert(free_backed_calls == N);
+}
+
+static void test_delete_two_children_frees_correct_value_successor_is_right_child(void) {
+    free_backed_calls = 0;
+    rbtree_t *t = rb_create(free_backed_free);
+    assert(t != NULL);
+
+    const char *keys[] = {"b", "a", "c"};
+    for (size_t i = 0; i < 3; i++) {
+        int *v = malloc(sizeof *v);
+        assert(v != NULL);
+        *v = (int)i;
+        assert(rb_insert(t, keys[i], v) == 0);
+    }
+
+    /* z="b" has two children and its successor is z->right ("c")
+     * directly -- the y->parent == z splice path. Only "b"'s own value
+     * must be freed here; "a" and "c" keep their live heap values. */
+    assert(rb_delete(t, "b") == 0);
+    assert(free_backed_calls == 1);
+    assert(rb_size(t) == 2);
+    assert(rb_validate(t) == 0);
+
+    rb_destroy(t);
+    assert(free_backed_calls == 3);
+}
+
+static void test_delete_two_children_frees_correct_value_successor_is_deeper(void) {
+    free_backed_calls = 0;
+    rbtree_t *t = rb_create(free_backed_free);
+    assert(t != NULL);
+
+    const char *keys[] = {"b", "a", "d", "c"};
+    for (size_t i = 0; i < 4; i++) {
+        int *v = malloc(sizeof *v);
+        assert(v != NULL);
+        *v = (int)i;
+        assert(rb_insert(t, keys[i], v) == 0);
+    }
+
+    /* z="b" has two children and its successor is tree_minimum("d") ==
+     * "c", which is NOT z->right directly -- the y->parent != z splice
+     * path. Only "b"'s own value must be freed here. */
+    assert(rb_delete(t, "b") == 0);
+    assert(free_backed_calls == 1);
+    assert(rb_size(t) == 3);
+    assert(rb_validate(t) == 0);
+
+    rb_destroy(t);
+    assert(free_backed_calls == 4);
+}
+
+static void test_destroy_after_mixed_insert_delete_topology(void) {
+    free_backed_calls = 0;
+    rbtree_t *t = rb_create(free_backed_free);
+    assert(t != NULL);
+
+    enum { N = 100 };
+    static char keys[N][16];
+    for (int i = 0; i < N; i++) {
+        snprintf(keys[i], sizeof keys[i], "mix-%d", i);
+    }
+    unsigned long state = 24680;
+    for (int i = N - 1; i > 0; i--) {
+        state = state * 1103515245UL + 12345UL;
+        int j = (int)(state % (unsigned long)(i + 1));
+        char tmp[16];
+        memcpy(tmp, keys[i], sizeof tmp);
+        memcpy(keys[i], keys[j], sizeof tmp);
+        memcpy(keys[j], tmp, sizeof tmp);
+    }
+
+    for (int i = 0; i < N; i++) {
+        int *v = malloc(sizeof *v);
+        assert(v != NULL);
+        *v = i;
+        assert(rb_insert(t, keys[i], v) == 0);
+    }
+
+    /* Delete the first half (in shuffled order), leaving a topology
+     * shaped by real delete_fixup rotations on the remaining half, then
+     * destroy the rest. */
+    int deleted = 0;
+    for (int i = 0; i < N / 2; i++) {
+        assert(rb_delete(t, keys[i]) == 0);
+        assert(rb_validate(t) == 0);
+        deleted++;
+    }
+    assert(free_backed_calls == deleted);
+    assert(rb_size(t) == (size_t)(N - deleted));
+
+    rb_destroy(t);
+    assert(free_backed_calls == N);
+}
+
 int main(void) {
     test_create_basic();
     test_insert_find_single();
@@ -899,6 +1101,15 @@ int main(void) {
     test_delete_frees_key_copy_and_value();
     test_delete_size_tracking();
     test_delete_random_deterministic_large();
+
+    test_destroy_empty_tree_frees_nothing();
+    test_insert_find_delete_very_long_key();
+    test_insert_find_delete_empty_string_key();
+    test_overwrite_same_key_many_times_no_double_free();
+    test_destroy_frees_everything_large_randomized();
+    test_delete_two_children_frees_correct_value_successor_is_right_child();
+    test_delete_two_children_frees_correct_value_successor_is_deeper();
+    test_destroy_after_mixed_insert_delete_topology();
 
     printf("ALL TESTS PASSED\n");
     return 0;
