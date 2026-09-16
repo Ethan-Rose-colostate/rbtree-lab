@@ -657,6 +657,51 @@ static void test_delete_fixup_case4_right(void) {
     rb_destroy(t);
 }
 
+static void test_delete_fixup_case1_sibling_red_left(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Inserting m,a,t,p,x,o produces m(B) root, a(B) left leaf, t(R)
+     * right child [p(B) left with o(R) as p's left child, x(B) right
+     * leaf]. Deleting "a" makes x=NULL, x_parent=m, sibling w=t RED --
+     * delete_fixup Case 1 (left), which recolors t black/m red and
+     * rotates left at m, then falls through the same call into Case 3
+     * then Case 4 against the new sibling. */
+    const rb_op ops[] = {
+        {'i', "m", 0}, {'i', "a", 0}, {'i', "t", 0},
+        {'i', "p", 0}, {'i', "x", 0}, {'i', "o", 0},
+        {'d', "a", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "a") == NULL);
+    assert(rb_size(t) == 5);
+
+    rb_destroy(t);
+}
+
+static void test_delete_fixup_case1_sibling_red_right(void) {
+    rbtree_t *t = rb_create(NULL);
+    assert(t != NULL);
+
+    /* Mirror: inserting m,z,f,k,b,l produces m(B) root, z(B) right leaf,
+     * f(R) left child [b(B) left leaf, k(B) right with l(R) as k's right
+     * child]. Deleting "z" makes x=NULL, x_parent=m, sibling w=f RED --
+     * delete_fixup Case 1 (right/mirror), which falls through to mirror
+     * Case 3 then Case 4. */
+    const rb_op ops[] = {
+        {'i', "m", 0}, {'i', "z", 0}, {'i', "f", 0},
+        {'i', "k", 0}, {'i', "b", 0}, {'i', "l", 0},
+        {'d', "z", 0},
+    };
+    run_ops(t, ops, sizeof ops / sizeof ops[0]);
+
+    assert(rb_find(t, "z") == NULL);
+    assert(rb_size(t) == 5);
+
+    rb_destroy(t);
+}
+
 static void test_delete_fixup_case2_left_propagates_to_root(void) {
     rbtree_t *t = rb_create(NULL);
     assert(t != NULL);
@@ -1093,6 +1138,8 @@ int main(void) {
     test_delete_two_children_successor_is_deeper();
     test_delete_fixup_case4_left();
     test_delete_fixup_case4_right();
+    test_delete_fixup_case1_sibling_red_left();
+    test_delete_fixup_case1_sibling_red_right();
     test_delete_fixup_case2_left_propagates_to_root();
     test_delete_fixup_case2_right_propagates_to_root();
     test_delete_root_triggers_fixup();
