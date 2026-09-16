@@ -1,10 +1,10 @@
 Episode 1 - Revised Plan:
 
-Prompt: Let's plan Milestone 2: rb_delete implementation and table-driven deletion tests.
+Prompt: Lets rewrite the fuzzer to include at least 100,000 ramnd insert/find/delete operations
 
-Response: A plan to develop the rb_transplant, find_node, delete_fixup, and tests/fuzz.c. The plan also included adding a table-driven deletion test harness to tests/test_rbtree.c and adding the ability to interleave deletes along with inserts to tests/fuzz.c.
+Response: Claude proposed a plan to use a fixed seed using srand and rand. Claude also asked if it should add a shadow that tracks the expected value and presence of each key. 
 
-Judgement: The plan was accepted in full with no parts rejected. 
+Judgement: I revised the plan so that it will use a PRNG inside fuzz.c. I also requested that claude uses a default seed for the PRNG and to print that seed when tests fail. Using this errors can be replicated as rand may produce different numbers on different machines even with the same seed. I also requested that the shadow store a copy of the number instead of the pointer to ensure the fuzzer never reads memory that was already freed.
 
 
 Episode 2 - Rejected / Oversized Diff
@@ -18,7 +18,7 @@ Judgement: Two of the proposed parts were rejected. These parts were rejected as
 
 Episode 3 - Tool-Output Debugging:
 
-Prompt: Run and show the output, prove to me all tests pass
+Prompt: Run and show output, Prove all tests pass
 
 Response: Claude ran make tests, make asan, and make memcheck. Make memcheck was found to crash instead of producing a leak report. Claude had diagnosed this as an issue left behind from the previous run of make asan. As a result claude ran make clean and reran make memcheck, which produced no errors. 
 
@@ -26,8 +26,8 @@ Judgement: Claude was then asked to explain why this error occurred, potential r
 
 Episode 4 - Review Finding Triaged:
 
-Prompt: What potential risks do they have, and what would be your solution to fix?
+Prompt: Review src/rbtree.c act as a agressive kernel reviewer. READ ONLY. Search for any failing cases, bugs, and potential risks
 
-Response: Claude assessed the two issues brought up during episode 3. Claude made a change in the make file to ensure memcheck will clean all and prevent any crashes like in episode 3. 
+Response: Claude assessed the code and agressively searched for any failing cases, bugs, or potential risks. Claude reported no bugs but noted that a freed pointer being stored when an existing key is re-inserted with the same value pointer may cause an error. 
 
-Judgement: The proposal was correct and easy to implement. It was approved and built.
+Judgement: Claude was correct to point this out however, if a caller attempted to re-insert an existing key with the already stored pointer, rb_insert would free the value and store the freed pointer. Additionally, overwriting frees the old value per rbtree.h. As a result, I left the code unchanged. 
