@@ -1,10 +1,10 @@
 Episode 1 - Revised Plan:
 
-Prompt: Let's plan Milestone 2: rb_delete implementation and table-driven deletion tests.
+Prompt: Re write request to rewrite fuzzer to include at least 100,000 rand inster/find/delete operations
 
-Response: A plan to develop the rb_transplant, find_node, delete_fixup, and tests/fuzz.c. The plan also included adding a table-driven deletion test harness to tests/test_rbtree.c and adding the ability to interleave deletes along with inserts to tests/fuzz.c.
+Response: Claude proposed a plan to use a fixed seed using srand instaed of rand. Claude also asked if it should add a shadow that tracks the expected value and presence of each key. 
 
-Judgement: The plan was accepted in full with no parts rejected. 
+Judgement: I revised the plan so that it will use a PRNG inside fuzz.c. I also requested that claude uses a default seed for the PRNG and to print that seed when tests fail. Using this errors can be replicated.
 
 
 Episode 2 - Rejected / Oversized Diff
